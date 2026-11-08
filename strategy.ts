@@ -72,6 +72,8 @@ export interface Params {
   probeMinRq: bigint;
   probeMaxOpen: number;
   probeSlippageBps: number;
+  /** A probe still held this many slots past its hold no longer blocks the next probe. */
+  probeStuckSlots: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -88,8 +90,8 @@ export const DEFAULT_PARAMS: Params = {
   ddZero: 0.42,
   minEntry: 50_000_000n,
   maxOpenGrad: 3,
-  ddCap: 0.48,
-  worstLoss: 0.9,
+  ddCap: 0.45,
+  worstLoss: 1.0,
   addBand: 0.08,
   addWindow: 60,
   tp1Rq: 72n * SOL,
@@ -99,17 +101,27 @@ export const DEFAULT_PARAMS: Params = {
   maxHold: 1500,
   buySlippageBps: 2000,
   sellSlippageBps: 9000,
-  probeTarget: 25,
+  probeTarget: 40,
   probeSize: 12_500_000n,
   probeHold: 30,
-  probeGap: 600,
-  probeMinAge: 3000,
-  probeMinRq: 3n * SOL,
+  probeGap: 300,
+  probeMinAge: 600,
+  probeMinRq: 1n * SOL,
   probeMaxOpen: 2,
   probeSlippageBps: 3000,
+  probeStuckSlots: 600,
 };
 
-type Tag = 'in' | 'tp1' | 'tp' | 'sl' | 'time' | 'probe' | 'probe_done' | 'probe_failed' | null;
+type Tag = 'in' | 'tp1' | 'tp' | 'sl' | 'time' | 'probe' | 'probe_stuck' | 'probe_done' | 'probe_failed' | null;
+
+/** The tags of probe round trips, which the graduation logic leaves alone. */
+const isProbe = (t: Tag | undefined): boolean => t === 'probe' || t === 'probe_stuck' || t === 'probe_done' || t === 'probe_failed';
+
+/** A sell of the position, halved once per earlier max_order_size rejection (a drained curve), never 0. */
+const sellPart = (tokens: bigint, shift: number): bigint => {
+  const t = tokens >> BigInt(shift);
+  return t > 0n ? t : tokens;
+};
 
 interface Coin {
   createSlot: number;
@@ -133,6 +145,10 @@ interface Coin {
   committed: bigint;
   target: bigint;
   exiting: boolean;
+  /** The first take-profit sell is in flight: the tag turns 'tp1' only once it fills. */
+  tp1Pending: boolean;
+  /** Halvings of the next sell after max_order_size rejections (a curve drained below its output). */
+  sellShift: number;
   /** Buy volume per wallet and the recent buys (slot, lamports), kept while the coin is young. */
   buyVol: Map<string, bigint> | null;
   recentSlots: number[];
@@ -173,7 +189,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       const net = q - (q * pb + 9_999n) / 10_000n - (q * cb + 9_999n) / 10_000n - tx;
       if (net > 0n) {
         eq += net;
-        if (c.tag !== 'probe' && c.tag !== 'probe_done') gradValue += net;
+        if (!isProbe(c.tag)) gradValue += net;
       }
     }
     return { eq, gradValue };
@@ -230,6 +246,8 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           committed: 0n,
           target: 0n,
           exiting: false,
+          tp1Pending: false,
+          sellShift: 0,
           buyVol: new Map(),
           recentSlots: [],
           recentSol: [],
@@ -266,8 +284,15 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       }
       if (f.side === 'sell') {
         c.exiting = false;
+        // A curve drained below the sell's output refuses it (max_order_size): halve the next one.
+        if (f.status === 'rejected' && f.reason === 'max_order_size' && c.sellShift < 8) c.sellShift++;
+        if (c.tp1Pending) {
+          // The first take-profit counts once its partial sell fills; a failed one is sent again.
+          if (f.status === 'filled' && c.tag === 'in') c.tag = 'tp1';
+          c.tp1Pending = false;
+        }
         if (!state.positions.has(f.mint)) {
-          if (c.tag === 'probe') c.tag = 'probe_done';
+          if (c.tag === 'probe' || c.tag === 'probe_stuck') c.tag = 'probe_done';
           c.committed = 0n;
           c.entry = 0;
         }
@@ -306,8 +331,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     let atRisk = gradValue;
     for (const o of state.pending.values()) {
       if (o.order.side !== 'buy') continue;
-      const t = coins.get(o.order.mint)?.tag;
-      if (t !== 'probe' && t !== 'probe_done' && t !== 'probe_failed') atRisk += BigInt(o.order.quote_lamports);
+      if (!isProbe(coins.get(o.order.mint)?.tag)) atRisk += BigInt(o.order.quote_lamports);
     }
     let headroom = (Number(eq) - (1 - p.ddCap) * Number(peakEquity)) / p.worstLoss - Number(atRisk);
 
@@ -316,15 +340,16 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       const h = state.positions.get(mint)!;
       const c = coins.get(mint);
       if (c === undefined || c.complete || c.exiting || pendingMints.has(mint)) continue;
-      if (c.tag === 'probe' || c.tag === 'probe_done' || c.entry === 0) continue;
+      if (isProbe(c.tag) || c.entry === 0) continue;
       const px = Number(c.vq) / Number(c.vt);
       const stop = px < c.entry * (1 - p.stopLoss);
       const tp = c.rq >= p.tpRq;
       const stale = slot - c.entrySlot > p.maxHold;
       if (stop || tp || stale) {
-        orders.push({ side: 'sell', mint, token_amount: h.token_amount, max_slippage_bps: p.sellSlippageBps });
+        orders.push({ side: 'sell', mint, token_amount: sellPart(h.token_amount, c.sellShift), max_slippage_bps: p.sellSlippageBps });
         c.exiting = true;
-        c.tag = tp ? 'tp' : stop ? 'sl' : 'time';
+        // A coin that already took profit is done for good; only a stop or time exit may re-enter.
+        c.tag = tp || c.tag === 'tp1' || c.tag === 'tp' ? 'tp' : stop ? 'sl' : 'time';
         continue;
       }
       if (c.tag === 'in' && c.rq >= p.tp1Rq) {
@@ -332,11 +357,11 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         if (part > 0n) {
           orders.push({ side: 'sell', mint, token_amount: part, max_slippage_bps: p.sellSlippageBps });
           c.exiting = true;
-          c.tag = 'tp1';
+          c.tp1Pending = true;
         }
         continue;
       }
-      if (c.committed < c.target && px <= c.entry * (1 + p.addBand) && slot - c.entrySlot <= p.addWindow) {
+      if (c.tag === 'in' && c.committed < c.target && px <= c.entry * (1 + p.addBand) && slot - c.entrySlot <= p.addWindow) {
         let amount = c.target - c.committed;
         const cap = buyCap(state, marks, mint, c);
         if (amount > cap) amount = cap;
@@ -352,15 +377,18 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       }
     }
 
-    // 2. Probe round trips: one at a time, only while few graduation positions are open.
+    // 2. Probe round trips: one at a time, only while few graduation positions are open. A probe
+    //    that cannot be sold (its curve drained) stops blocking the next one after probeStuckSlots.
     if (p.probeTarget > 0) {
       let probing = false;
       for (const mint of [...state.positions.keys()].sort()) {
         const c = coins.get(mint);
-        if (c === undefined || c.tag !== 'probe') continue;
-        probing = true;
+        if (c === undefined || (c.tag !== 'probe' && c.tag !== 'probe_stuck')) continue;
+        if (c.tag === 'probe' && slot - c.entrySlot > p.probeHold + p.probeStuckSlots) c.tag = 'probe_stuck';
+        if (c.tag === 'probe') probing = true;
         if (!c.exiting && !pendingMints.has(mint) && slot - c.entrySlot >= p.probeHold) {
-          orders.push({ side: 'sell', mint, token_amount: state.positions.get(mint)!.token_amount, max_slippage_bps: p.sellSlippageBps });
+          const tokens = state.positions.get(mint)!.token_amount;
+          orders.push({ side: 'sell', mint, token_amount: sellPart(tokens, c.sellShift), max_slippage_bps: p.sellSlippageBps });
           c.exiting = true;
         }
       }
@@ -368,8 +396,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         if (o.order.side === 'buy' && coins.get(o.order.mint)?.tag === 'probe') probing = true;
       }
       let gsOpen = 0;
-      for (const mint of state.positions.keys()) if (coins.get(mint)?.tag !== 'probe') gsOpen++;
-      if (!probing && probesUsed < p.probeTarget && gsOpen <= p.probeMaxOpen && slot >= nextProbe) {
+      for (const mint of state.positions.keys()) if (!isProbe(coins.get(mint)?.tag)) gsOpen++;
+      const roomForOne = state.committedPositionCount() < state.hello.caps.max_open_positions;
+      if (!probing && roomForOne && probesUsed < p.probeTarget && gsOpen <= p.probeMaxOpen && slot >= nextProbe) {
         for (const mint of touched) {
           const c = coins.get(mint)!;
           if (c.complete || c.tag !== null || state.positions.has(mint) || pendingMints.has(mint)) continue;
@@ -400,10 +429,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     let size = BigInt(Math.trunc(Number(p.size) * f));
     if (size < p.minEntry) size = 0n;
     let gradOpen = 0;
-    for (const mint of state.positions.keys()) {
-      const t = coins.get(mint)?.tag;
-      if (t !== 'probe' && t !== 'probe_done') gradOpen++;
-    }
+    for (const mint of state.positions.keys()) if (!isProbe(coins.get(mint)?.tag)) gradOpen++;
     for (const o of state.pending.values()) {
       if (o.order.side === 'buy' && !state.positions.has(o.order.mint) && coins.get(o.order.mint)?.tag === 'in') gradOpen++;
     }
