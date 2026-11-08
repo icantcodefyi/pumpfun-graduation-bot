@@ -6,7 +6,7 @@
 // fill near 45 SOL pays ~1.7-2x by the time the curve is near completion. So the bot:
 //   1. enters young coins (30..900 slots old) whose real SOL reserve is 45..70 SOL, with at least
 //      15 SOL bought in the last 30 slots and no five buyers holding more than 30% of buy volume;
-//   2. buys up to 3 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
+//   2. buys up to 4 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
 //      sends a failed or rejected tranche again; at most 3 such positions at once, and new entries
 //      shrink linearly from full size at 15% below the equity peak to nothing at 42%;
 //   3. sells half once the curve holds 72 SOL, the rest at 76 SOL (or lets completion close it),
@@ -84,7 +84,7 @@ export const DEFAULT_PARAMS: Params = {
   velWindow: 30,
   velMin: 15n * SOL,
   top5Max: 0.3,
-  size: 3_000_000_000n,
+  size: 4_000_000_000n,
   minBuy: 20_000_000n,
   ddFull: 0.15,
   ddZero: 0.42,
