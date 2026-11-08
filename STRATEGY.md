@@ -15,11 +15,12 @@ The bot enters a coin when, on the batch it decides on:
 ## How it sizes
 
 - **Target:** 3 SOL per position, curve fees included.
-- **Tranches:** each fits the 1%-of-real-reserve cap per reply, read on the reserves the harness checks, including the bot's own past flow on that curve. Tranches are only added within 8% of the entry price and 60 slots of the entry. Failed or rejected tranches are resent.
+- **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added only within 8% of the entry price and 60 slots of entry; failed ones are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
 - **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
-- **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could lose 90% with equity still within 48% of its peak, so simultaneous rugs cannot breach the 50% guardrail.
-- **Probes:** to ensure 20+ coins carry a round trip of at least 0.01 SOL, up to 25 probes of 0.0125 SOL run on calm coins (older than 3,000 slots, at least 3 SOL of real reserve). Each is held 30 slots, one at a time, 600+ slots apart, only while at most 2 graduation positions are open. Each costs about 0.001 SOL.
+- **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could be lost entirely with equity still within 45% of its peak, so simultaneous rugs cannot breach the 50% guardrail.
+- **Probes:** to ensure 20+ coins carry a round trip of at least 0.01 SOL, up to 50 probes of 0.0125 SOL run on coins 120+ slots old with 1+ SOL of real reserve. Each is held 30 slots, one at a time, 150+ slots apart, while at most 2 graduation positions are open. Each costs about 0.001 SOL. On a universe a tenth the dev size, the bot still held 30+ counted coins.
+- **Drained curves:** a sell refused because the curve holds too little SOL is halved and retried; an unsellable probe stops blocking new probes.
 
 ## When it exits
 
@@ -30,6 +31,6 @@ The bot enters a coin when, on the batch it decides on:
 
 ## Notes
 
-- **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O. It uses sorted mint order and its own sequential client ids, so both graded executions emit identical orders.
-- **Dev window:** +13.46 SOL net, 20% maximum drawdown, 41 coins with qualifying round trips, +11.92 SOL at 2× fees, +5.62 SOL without its three best coins. Across nearby filter settings and seeds it stayed positive (worst +6.8 SOL).
+- **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
+- **Dev window:** +13.47 SOL net, 20% maximum drawdown, 65 counted coins, +11.91 SOL at 2× fees, +5.63 SOL without its three best coins.
 - **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 2.6 SOL (median). The drawdown brake floors a bad day near −4.2 SOL. The edge needs real graduation sprints in the window.
