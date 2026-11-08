@@ -101,11 +101,11 @@ export const DEFAULT_PARAMS: Params = {
   maxHold: 1500,
   buySlippageBps: 2000,
   sellSlippageBps: 9000,
-  probeTarget: 40,
+  probeTarget: 50,
   probeSize: 12_500_000n,
   probeHold: 30,
-  probeGap: 300,
-  probeMinAge: 600,
+  probeGap: 150,
+  probeMinAge: 120,
   probeMinRq: 1n * SOL,
   probeMaxOpen: 2,
   probeSlippageBps: 3000,
@@ -441,8 +441,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       const c = coins.get(mint)!;
       if (c.complete || c.entry !== 0 || state.positions.has(mint) || pendingMints.has(mint)) continue;
       // One live entry per coin; a coin left on a stop or time exit may be entered again while young
-      // (real graduations often shake out before they run), never after a take-profit or a probe.
-      if (c.tag !== null && c.tag !== 'sl' && c.tag !== 'time') continue;
+      // (real graduations often shake out before they run), and so may a coin whose probe is over,
+      // never one that took profit.
+      if (c.tag !== null && c.tag !== 'sl' && c.tag !== 'time' && c.tag !== 'probe_done' && c.tag !== 'probe_failed') continue;
       const age = slot - c.createSlot;
       if (age > p.maxAge || age < p.minAge) continue;
       if (c.rq < p.rqLo || c.rq > p.rqHi) continue;
