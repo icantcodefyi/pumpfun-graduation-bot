@@ -111,6 +111,11 @@ interface Coin {
   /** Fee bps of the coin's last recorded trade: what a close of it pays (0: none seen yet). */
   feeBps: bigint;
   creatorBps: bigint;
+  /**
+   * Net curve quote our own fills and closes put into the curve. The harness shifts every reserve
+   * it checks by it, so once a position is closed the buy cap reads the recorded reserve plus it.
+   */
+  offQuote: bigint;
   complete: boolean;
   tag: Tag;
   /** Recorded price when the entry was decided (0: no live entry). */
@@ -187,7 +192,8 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
   /** The per-reply buy cap with a 3% margin, on the reserves the harness will check (marks when we have them). */
   const buyCap = (state: BotState, marks: Map<Pubkey, Mark>, mint: Pubkey, c: Coin): bigint => {
     const m = marks.get(mint);
-    const rq = m !== undefined ? BigInt(m.real_quote_reserves) : c.rq;
+    const shifted = c.rq + c.offQuote > 0n ? c.rq + c.offQuote : 0n;
+    const rq = m !== undefined ? BigInt(m.real_quote_reserves) : shifted;
     return ((rq * BigInt(state.hello.caps.max_order_bps_of_real_reserve)) / 10_000n) * 97n / 100n;
   };
 
@@ -203,6 +209,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           rq: 0n,
           feeBps: 0n,
           creatorBps: 0n,
+          offQuote: 0n,
           complete: false,
           tag: null,
           entry: 0,
@@ -239,6 +246,11 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     for (const f of batch.fills) {
       const c = coins.get(f.mint);
       if (c === undefined) continue;
+      if (f.status === 'filled') {
+        // A buy paid curve quote + fees; a sell (or close) received curve quote - fees.
+        if (f.side === 'buy') c.offQuote += BigInt(f.quote_lamports) - BigInt(f.fee_lamports);
+        else c.offQuote -= BigInt(f.quote_lamports) + BigInt(f.fee_lamports);
+      }
       if (f.side === 'sell') {
         c.exiting = false;
         if (!state.positions.has(f.mint)) {
