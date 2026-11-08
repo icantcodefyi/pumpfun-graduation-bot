@@ -10,7 +10,7 @@ The bot enters a coin when, on the batch it decides on:
 - **Reserve level:** its recorded real SOL reserve is 45 to 70 SOL.
 - **Velocity:** at least 15 SOL was bought in the last 30 slots.
 - **Breadth:** the five largest buyers hold at most 30% of all buy volume, filtering out pumps by a few wallets that dump together.
-- **Re-entry:** a coin left on a stop or time exit may be entered again while still young, if it sets up again. Real graduations often shake weak holders out first.
+- **Re-entry:** a coin left on a stop or time exit may be entered again while young, since real graduations often shake out first.
 
 ## How it sizes
 
@@ -18,7 +18,7 @@ The bot enters a coin when, on the batch it decides on:
 - **Tranches:** each fits the 1%-of-real-reserve cap per reply, read on the reserves the harness checks, including the bot's own past flow on that curve. Tranches are only added within 8% of the entry price and 60 slots of the entry. Failed or rejected tranches are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
 - **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
-- **Exposure guard:** a buy is cut so that every open graduation position, plus buys in flight, could lose 90% of its value with equity still within 48% of its peak. A cluster of simultaneous rugs cannot breach the 50% drawdown guardrail.
+- **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could lose 90% with equity still within 48% of its peak, so simultaneous rugs cannot breach the 50% guardrail.
 - **Probes:** to ensure 20+ coins carry a round trip of at least 0.01 SOL, up to 25 probes of 0.0125 SOL run on calm coins (older than 3,000 slots, at least 3 SOL of real reserve). Each is held 30 slots, one at a time, 600+ slots apart, only while at most 2 graduation positions are open. Each costs about 0.001 SOL.
 
 ## When it exits
@@ -26,7 +26,7 @@ The bot enters a coin when, on the batch it decides on:
 - **Take-profit:** half is sold when the recorded real SOL reserve reaches 72 SOL, and the rest at 76 SOL. If the curve completes first, the replay closes the position at the completion price.
 - **Stop:** everything is sold if the recorded price falls 25% below the entry price.
 - **Time limit:** everything is sold 1,500 slots (about 10 minutes) after entry.
-- **Slippage:** exits use wide slippage limits, since getting out matters more than price.
+- **Slippage:** exits use wide slippage limits.
 
 ## Notes
 
