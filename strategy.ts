@@ -6,7 +6,9 @@
 // fill near 45 SOL pays ~1.7-2x by the time the curve is near completion. So the bot:
 //   1. enters young coins (30..900 slots old) whose real SOL reserve is 45..70 SOL, with at least
 //      15 SOL bought in the last 30 slots and no five buyers holding more than 30% of buy volume;
-//   2. buys up to 1.5 SOL in tranches inside the 1%-of-reserve cap, only near its entry price;
+//   2. buys up to 2.5 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
+//      sends a failed or rejected tranche again; at most 3 such positions at once, and new entries
+//      shrink linearly from full size at 15% below the equity peak to nothing at 42%;
 //   3. sells half once the curve holds 72 SOL, the rest at 76 SOL (or lets completion close it),
 //      stops out 25% below its entry price, and gives up after 1500 slots;
 //   4. meanwhile runs tiny probe round trips on calm older coins until enough distinct coins have
@@ -34,6 +36,14 @@ export interface Params {
   /** Target position (lamports, curve fees included) and the smallest tranche worth sending. */
   size: bigint;
   minBuy: bigint;
+  /**
+   * Drawdown brake on new entries: full size while equity is within ddFull of its peak, scaled
+   * linearly to zero at ddZero (and skipped below minEntry); at most maxOpenGrad positions at once.
+   */
+  ddFull: number;
+  ddZero: number;
+  minEntry: bigint;
+  maxOpenGrad: number;
   /** Tranches are added while the price is within addBand above entry, for addWindow slots. */
   addBand: number;
   addWindow: number;
@@ -64,8 +74,12 @@ export const DEFAULT_PARAMS: Params = {
   velWindow: 30,
   velMin: 15n * SOL,
   top5Max: 0.3,
-  size: 1_500_000_000n,
+  size: 2_500_000_000n,
   minBuy: 20_000_000n,
+  ddFull: 0.15,
+  ddZero: 0.42,
+  minEntry: 50_000_000n,
+  maxOpenGrad: 3,
   addBand: 0.08,
   addWindow: 60,
   tp1Rq: 72n * SOL,
@@ -85,7 +99,7 @@ export const DEFAULT_PARAMS: Params = {
   probeSlippageBps: 3000,
 };
 
-type Tag = 'in' | 'tp1' | 'tp' | 'sl' | 'time' | 'probe' | 'probe_done' | null;
+type Tag = 'in' | 'tp1' | 'tp' | 'sl' | 'time' | 'probe' | 'probe_done' | 'probe_failed' | null;
 
 interface Coin {
   createSlot: number;
@@ -93,6 +107,9 @@ interface Coin {
   vq: bigint;
   vt: bigint;
   rq: bigint;
+  /** Fee bps of the coin's last recorded trade: what a close of it pays (0: none seen yet). */
+  feeBps: bigint;
+  creatorBps: bigint;
   complete: boolean;
   tag: Tag;
   /** Recorded price when the entry was decided (0: no live entry). */
@@ -112,6 +129,36 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
   const coins = new Map<Pubkey, Coin>();
   let nextProbe = 0;
   let probesUsed = 0;
+  let peakEquity = -1;
+  /** Our own client ids: buy amounts, so a failed or rejected tranche can be sent again. */
+  const buyAmounts = new Map<string, bigint>();
+  let nextId = 1;
+  const id = (): string => `b${nextId++}`;
+
+  /**
+   * Equity as the harness marks it: cash plus what closing each position now would pay (its last
+   * trade's fee bps, output capped at the real quote reserve, tx fees deducted; a close that would
+   * not cover its tx fees counts nothing).
+   */
+  const equity = (state: BotState, marks: Map<Pubkey, Mark>): bigint => {
+    const tx = state.txFeeLamports();
+    let eq = state.cash;
+    for (const [mint, h] of state.positions) {
+      const m = marks.get(mint);
+      const c = coins.get(mint);
+      if (m === undefined || c === undefined) continue;
+      const vq = BigInt(m.virtual_quote_reserves);
+      const vt = BigInt(m.virtual_token_reserves);
+      const rq = BigInt(m.real_quote_reserves);
+      let q = (h.token_amount * vq) / (vt + h.token_amount);
+      if (q > rq) q = rq;
+      const pb = c.feeBps > 0n ? c.feeBps : BigInt(state.hello.fees.protocol_bps_fallback);
+      const cb = c.feeBps > 0n ? c.creatorBps : BigInt(state.hello.fees.creator_bps_fallback);
+      const net = q - (q * pb + 9_999n) / 10_000n - (q * cb + 9_999n) / 10_000n - tx;
+      if (net > 0n) eq += net;
+    }
+    return eq;
+  };
 
   const velocity = (c: Coin, slot: number): bigint => {
     const lo = slot - p.velWindow;
@@ -153,6 +200,8 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           vq: BigInt(e.virtual_quote_reserves),
           vt: BigInt(e.virtual_token_reserves),
           rq: 0n,
+          feeBps: 0n,
+          creatorBps: 0n,
           complete: false,
           tag: null,
           entry: 0,
@@ -171,6 +220,8 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         c.vq = BigInt(e.virtual_quote_reserves);
         c.vt = BigInt(e.virtual_token_reserves);
         c.rq = BigInt(e.real_quote_reserves);
+        c.feeBps = BigInt(e.fee_basis_points);
+        c.creatorBps = BigInt(e.creator_fee_basis_points);
         if (e.is_buy && c.buyVol !== null) {
           const sol = BigInt(e.quote_amount);
           c.buyVol.set(e.user, (c.buyVol.get(e.user) ?? 0n) + sol);
@@ -194,14 +245,27 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           c.committed = 0n;
           c.entry = 0;
         }
-      } else if (f.status !== 'filled' && !state.positions.has(f.mint)) {
-        let stillPending = false;
-        for (const o of state.pending.values()) if (o.order.mint === f.mint) stillPending = true;
-        if (!stillPending) {
-          c.committed = 0n;
-          c.entry = 0;
+      } else if (f.status !== 'filled') {
+        // A failed or rejected buy: its amount may be sent again; an opening buy that never filled
+        // leaves the coin free to be entered again while its setup still holds.
+        const amount = buyAmounts.get(f.client_id) ?? 0n;
+        if (state.positions.has(f.mint)) {
+          c.committed = c.committed > amount ? c.committed - amount : 0n;
+        } else {
+          let stillPending = false;
+          for (const o of state.pending.values()) if (o.order.mint === f.mint) stillPending = true;
+          if (!stillPending) {
+            c.committed = 0n;
+            c.entry = 0;
+            if (c.tag === 'in') c.tag = null;
+            else if (c.tag === 'probe') {
+              c.tag = 'probe_failed';
+              probesUsed--;
+            }
+          }
         }
       }
+      if (f.side === 'buy') buyAmounts.delete(f.client_id);
     }
 
     const marks = new Map<Pubkey, Mark>();
@@ -240,7 +304,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         const cap = buyCap(state, marks, mint, c);
         if (amount > cap) amount = cap;
         if (amount >= p.minBuy && state.freeCashLamports() - amount > 0n) {
-          orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps });
+          const client_id = id();
+          buyAmounts.set(client_id, amount);
+          orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps, client_id });
           c.committed += amount;
           pendingMints.add(mint);
         }
@@ -270,7 +336,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           if (c.complete || c.tag !== null || state.positions.has(mint) || pendingMints.has(mint)) continue;
           if (slot - c.createSlot < p.probeMinAge || c.rq < p.probeMinRq) continue;
           if (p.probeSize > buyCap(state, marks, mint, c)) continue;
-          orders.push({ side: 'buy', mint, quote_lamports: p.probeSize, max_slippage_bps: p.probeSlippageBps });
+          const client_id = id();
+          buyAmounts.set(client_id, p.probeSize);
+          orders.push({ side: 'buy', mint, quote_lamports: p.probeSize, max_slippage_bps: p.probeSlippageBps, client_id });
           c.tag = 'probe';
           c.entry = Number(c.vq) / Number(c.vt);
           c.entrySlot = slot;
@@ -284,10 +352,28 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       }
     }
 
-    // 3. New graduation entries on coins that traded this slot.
+    // 3. New graduation entries on coins that traded this slot, sized down as equity falls off its
+    //    peak and skipped while maxOpenGrad graduation positions are open or pending.
+    const eq = equity(state, marks);
+    if (eq > peakEquity) peakEquity = eq;
+    const dd = 1 - Number(eq) / Number(peakEquity);
+    let f = (p.ddZero - dd) / (p.ddZero - p.ddFull);
+    if (f > 1) f = 1;
+    if (f < 0) f = 0;
+    let size = BigInt(Math.trunc(Number(p.size) * f));
+    if (size < p.minEntry) size = 0n;
+    let gradOpen = 0;
+    for (const mint of state.positions.keys()) {
+      const t = coins.get(mint)?.tag;
+      if (t !== 'probe' && t !== 'probe_done') gradOpen++;
+    }
+    for (const o of state.pending.values()) {
+      if (o.order.side === 'buy' && !state.positions.has(o.order.mint) && coins.get(o.order.mint)?.tag === 'in') gradOpen++;
+    }
+    if (gradOpen >= p.maxOpenGrad) size = 0n;
     let open = state.committedPositionCount();
     const cap = state.hello.caps;
-    for (const mint of touched) {
+    for (const mint of size === 0n ? [] : touched) {
       if (open >= cap.max_open_positions || orders.length >= cap.max_orders_per_batch) break;
       const c = coins.get(mint)!;
       if (c.complete || c.tag !== null || state.positions.has(mint) || pendingMints.has(mint)) continue;
@@ -296,16 +382,18 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       if (c.rq < p.rqLo || c.rq > p.rqHi) continue;
       if (velocity(c, slot) < p.velMin) continue;
       if (top5Share(c) > p.top5Max) continue;
-      let amount = p.size;
+      let amount = size;
       const sizeCap = buyCap(state, marks, mint, c);
       if (amount > sizeCap) amount = sizeCap;
       if (amount < p.minBuy || state.freeCashLamports() - amount <= 0n) continue;
-      orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps });
+      const client_id = id();
+      buyAmounts.set(client_id, amount);
+      orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps, client_id });
       c.tag = 'in';
       c.entry = Number(c.vq) / Number(c.vt);
       c.entrySlot = slot;
       c.committed = amount;
-      c.target = p.size;
+      c.target = size;
       pendingMints.add(mint);
       open++;
     }
