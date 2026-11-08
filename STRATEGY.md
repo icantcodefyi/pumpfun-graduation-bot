@@ -14,7 +14,7 @@ The bot enters a coin when, on the batch it decides on:
 
 ## How it sizes
 
-- **Target:** 3 SOL per position, curve fees included.
+- **Target:** 4 SOL per position, curve fees included.
 - **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added only within 8% of the entry price and 60 slots of entry; failed ones are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
 - **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
@@ -32,5 +32,5 @@ The bot enters a coin when, on the batch it decides on:
 ## Notes
 
 - **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
-- **Dev window:** +13.47 SOL net, 20% maximum drawdown, 65 counted coins, +11.91 SOL at 2× fees, +5.63 SOL without its three best coins.
-- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 2.6 SOL (median). The drawdown brake floors a bad day near −4.2 SOL. The edge needs real graduation sprints in the window.
+- **Dev window:** +17.50 SOL net, 23% maximum drawdown, 65 counted coins, +15.50 SOL at 2× fees, +7.65 SOL without its three best coins.
+- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 3.3 SOL (median). The drawdown brake floors a bad day near −4.2 SOL. The edge needs real graduation sprints in the window.
