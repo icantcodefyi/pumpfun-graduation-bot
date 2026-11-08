@@ -6,11 +6,12 @@
 // fill near 45 SOL pays ~1.7-2x by the time the curve is near completion. So the bot:
 //   1. enters young coins (30..900 slots old) whose real SOL reserve is 45..70 SOL, with at least
 //      15 SOL bought in the last 30 slots and no five buyers holding more than 30% of buy volume;
-//   2. buys up to 2.5 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
+//   2. buys up to 3 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
 //      sends a failed or rejected tranche again; at most 3 such positions at once, and new entries
 //      shrink linearly from full size at 15% below the equity peak to nothing at 42%;
 //   3. sells half once the curve holds 72 SOL, the rest at 76 SOL (or lets completion close it),
-//      stops out 25% below its entry price, and gives up after 1500 slots;
+//      stops out 25% below its entry price, and gives up after 1500 slots; a coin left on a stop
+//      or a time exit may be entered again if it sets up again while still young;
 //   4. meanwhile runs tiny probe round trips on calm older coins until enough distinct coins have
 //      round trips for the competition's guardrail.
 //
@@ -74,7 +75,7 @@ export const DEFAULT_PARAMS: Params = {
   velWindow: 30,
   velMin: 15n * SOL,
   top5Max: 0.3,
-  size: 2_500_000_000n,
+  size: 3_000_000_000n,
   minBuy: 20_000_000n,
   ddFull: 0.15,
   ddZero: 0.42,
@@ -89,7 +90,7 @@ export const DEFAULT_PARAMS: Params = {
   maxHold: 1500,
   buySlippageBps: 2000,
   sellSlippageBps: 9000,
-  probeTarget: 12,
+  probeTarget: 25,
   probeSize: 12_500_000n,
   probeHold: 30,
   probeGap: 600,
@@ -376,7 +377,10 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     for (const mint of size === 0n ? [] : touched) {
       if (open >= cap.max_open_positions || orders.length >= cap.max_orders_per_batch) break;
       const c = coins.get(mint)!;
-      if (c.complete || c.tag !== null || state.positions.has(mint) || pendingMints.has(mint)) continue;
+      if (c.complete || c.entry !== 0 || state.positions.has(mint) || pendingMints.has(mint)) continue;
+      // One live entry per coin; a coin left on a stop or time exit may be entered again while young
+      // (real graduations often shake out before they run), never after a take-profit or a probe.
+      if (c.tag !== null && c.tag !== 'sl' && c.tag !== 'time') continue;
       const age = slot - c.createSlot;
       if (age > p.maxAge || age < p.minAge) continue;
       if (c.rq < p.rqLo || c.rq > p.rqHi) continue;
