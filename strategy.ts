@@ -45,6 +45,13 @@ export interface Params {
   ddZero: number;
   minEntry: bigint;
   maxOpenGrad: number;
+  /**
+   * Exposure guard: adds and entries never take the open graduation positions (marked value plus
+   * buys in flight) past what could lose worstLoss of itself and still leave equity within ddCap of
+   * its peak, so even a cluster of rugs at once stays inside the drawdown guardrail.
+   */
+  ddCap: number;
+  worstLoss: number;
   /** Tranches are added while the price is within addBand above entry, for addWindow slots. */
   addBand: number;
   addWindow: number;
@@ -81,6 +88,8 @@ export const DEFAULT_PARAMS: Params = {
   ddZero: 0.42,
   minEntry: 50_000_000n,
   maxOpenGrad: 3,
+  ddCap: 0.48,
+  worstLoss: 0.9,
   addBand: 0.08,
   addWindow: 60,
   tp1Rq: 72n * SOL,
@@ -146,9 +155,10 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
    * trade's fee bps, output capped at the real quote reserve, tx fees deducted; a close that would
    * not cover its tx fees counts nothing).
    */
-  const equity = (state: BotState, marks: Map<Pubkey, Mark>): bigint => {
+  const equity = (state: BotState, marks: Map<Pubkey, Mark>): { eq: bigint; gradValue: bigint } => {
     const tx = state.txFeeLamports();
     let eq = state.cash;
+    let gradValue = 0n;
     for (const [mint, h] of state.positions) {
       const m = marks.get(mint);
       const c = coins.get(mint);
@@ -161,9 +171,12 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       const pb = c.feeBps > 0n ? c.feeBps : BigInt(state.hello.fees.protocol_bps_fallback);
       const cb = c.feeBps > 0n ? c.creatorBps : BigInt(state.hello.fees.creator_bps_fallback);
       const net = q - (q * pb + 9_999n) / 10_000n - (q * cb + 9_999n) / 10_000n - tx;
-      if (net > 0n) eq += net;
+      if (net > 0n) {
+        eq += net;
+        if (c.tag !== 'probe' && c.tag !== 'probe_done') gradValue += net;
+      }
     }
-    return eq;
+    return { eq, gradValue };
   };
 
   const velocity = (c: Coin, slot: number): bigint => {
@@ -287,6 +300,17 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     for (const o of state.pending.values()) pendingMints.add(o.order.mint);
     const orders: OrderInput[] = [];
 
+    // Equity, its peak, the entry size brake and the exposure guard's headroom (lamports, a float).
+    const { eq, gradValue } = equity(state, marks);
+    if (eq > peakEquity) peakEquity = eq;
+    let atRisk = gradValue;
+    for (const o of state.pending.values()) {
+      if (o.order.side !== 'buy') continue;
+      const t = coins.get(o.order.mint)?.tag;
+      if (t !== 'probe' && t !== 'probe_done' && t !== 'probe_failed') atRisk += BigInt(o.order.quote_lamports);
+    }
+    let headroom = (Number(eq) - (1 - p.ddCap) * Number(peakEquity)) / p.worstLoss - Number(atRisk);
+
     // 1. Exits and tranche adds on held graduation positions, in mint order.
     for (const mint of [...state.positions.keys()].sort()) {
       const h = state.positions.get(mint)!;
@@ -316,12 +340,14 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         let amount = c.target - c.committed;
         const cap = buyCap(state, marks, mint, c);
         if (amount > cap) amount = cap;
+        if (Number(amount) > headroom) amount = headroom > 0 ? BigInt(Math.trunc(headroom)) : 0n;
         if (amount >= p.minBuy && state.freeCashLamports() - amount > 0n) {
           const client_id = id();
           buyAmounts.set(client_id, amount);
           orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps, client_id });
           c.committed += amount;
           pendingMints.add(mint);
+          headroom -= Number(amount);
         }
       }
     }
@@ -366,9 +392,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     }
 
     // 3. New graduation entries on coins that traded this slot, sized down as equity falls off its
-    //    peak and skipped while maxOpenGrad graduation positions are open or pending.
-    const eq = equity(state, marks);
-    if (eq > peakEquity) peakEquity = eq;
+    //    peak, kept inside the exposure guard, and skipped while maxOpenGrad positions are open.
     const dd = 1 - Number(eq) / Number(peakEquity);
     let f = (p.ddZero - dd) / (p.ddZero - p.ddFull);
     if (f > 1) f = 1;
@@ -401,7 +425,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       let amount = size;
       const sizeCap = buyCap(state, marks, mint, c);
       if (amount > sizeCap) amount = sizeCap;
+      if (Number(amount) > headroom) amount = headroom > 0 ? BigInt(Math.trunc(headroom)) : 0n;
       if (amount < p.minBuy || state.freeCashLamports() - amount <= 0n) continue;
+      headroom -= Number(amount);
       const client_id = id();
       buyAmounts.set(client_id, amount);
       orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps, client_id });
