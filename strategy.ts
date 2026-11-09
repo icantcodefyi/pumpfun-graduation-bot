@@ -5,7 +5,8 @@
 // reserves fast, on broad buying, finish that run far more often than the average coin dies, and a
 // fill near 45 SOL pays ~1.7-2x by the time the curve is near completion. So the bot:
 //   1. enters young coins (30..900 slots old) whose real SOL reserve is 45..70 SOL, with at least
-//      15 SOL bought in the last 30 slots and no five buyers holding more than 30% of buy volume;
+//      15 SOL bought in the last 30 slots, no five buyers holding more than 30% of buy volume, and
+//      the ten largest wallets still holding at most 62% of the tokens the curve has sold;
 //   2. buys up to 10 SOL, and at most 40% of equity, in tranches inside the 1%-of-reserve cap,
 //      while the price is within 12% of its entry price and for 90 slots, and sends a failed or
 //      rejected tranche again; at most 3 such positions at once, never more than could lose 75% of
@@ -38,6 +39,8 @@ export interface Params {
   velMin: bigint;
   /** The five largest buyers' share of all buy volume so far must not exceed this. */
   top5Max: number;
+  /** The ten largest wallet balances must hold at most this percentage of the tokens sold so far. */
+  top10HeldPct: number;
   /** Target position (lamports, curve fees included) and the smallest tranche worth sending. */
   size: bigint;
   minBuy: bigint;
@@ -90,6 +93,7 @@ export const DEFAULT_PARAMS: Params = {
   velWindow: 30,
   velMin: 15n * SOL,
   top5Max: 0.3,
+  top10HeldPct: 62,
   size: 10_000_000_000n,
   minBuy: 20_000_000n,
   eqFrac: 0.4,
@@ -161,6 +165,13 @@ interface Coin {
   recentSlots: number[];
   recentSol: bigint[];
   recentHead: number;
+  /**
+   * Net tokens each wallet still holds (bought minus sold), kept as long as buyVol, and the curve's
+   * real token reserve at creation and after its latest trade: rt0 - rt is what the curve has sold.
+   */
+  netTok: Map<string, bigint> | null;
+  rt0: bigint;
+  rt: bigint;
 }
 
 export function createStrategy(p: Params = DEFAULT_PARAMS) {
@@ -225,6 +236,22 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     return total === 0n ? 1 : Number(top) / Number(total);
   };
 
+  /**
+   * Holders still spread out: the ten largest wallet balances hold at most top10HeldPct% of the
+   * tokens the curve has sold. Concentrated holders can dump a sprint in one slot.
+   */
+  const holdersSpread = (c: Coin): boolean => {
+    if (c.netTok === null) return false;
+    let sold = c.rt0 - c.rt;
+    if (sold <= 0n) sold = 1n;
+    const held: bigint[] = [];
+    for (const v of c.netTok.values()) if (v > 0n) held.push(v);
+    held.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    let top = 0n;
+    for (let i = 0; i < held.length && i < 10; i++) top += held[i]!;
+    return top * 100n <= BigInt(p.top10HeldPct) * sold;
+  };
+
   /** The per-reply buy cap with a 3% margin, on the reserves the harness will check (marks when we have them). */
   const buyCap = (state: BotState, marks: Map<Pubkey, Mark>, mint: Pubkey, c: Coin): bigint => {
     const m = marks.get(mint);
@@ -259,6 +286,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           recentSlots: [],
           recentSol: [],
           recentHead: 0,
+          netTok: new Map(),
+          rt0: BigInt(e.real_token_reserves),
+          rt: BigInt(e.real_token_reserves),
         });
       } else if (e.event === 'TradeEvent') {
         const c = coins.get(e.mint);
@@ -273,6 +303,11 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           c.buyVol.set(e.user, (c.buyVol.get(e.user) ?? 0n) + sol);
           c.recentSlots.push(e.slot);
           c.recentSol.push(sol);
+        }
+        if (c.netTok !== null) {
+          c.rt = BigInt(e.real_token_reserves);
+          const tok = BigInt(e.token_amount);
+          c.netTok.set(e.user, (c.netTok.get(e.user) ?? 0n) + (e.is_buy ? tok : -tok));
         }
         if (touched.length === 0 || touched[touched.length - 1] !== e.mint) touched.push(e.mint);
       } else {
@@ -460,6 +495,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       if (c.rq < p.rqLo || c.rq > p.rqHi) continue;
       if (velocity(c, slot) < p.velMin) continue;
       if (top5Share(c) > p.top5Max) continue;
+      if (!holdersSpread(c)) continue;
       let amount = size;
       const sizeCap = buyCap(state, marks, mint, c);
       if (amount > sizeCap) amount = sizeCap;
@@ -483,6 +519,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
       const c = coins.get(mint)!;
       if (c.buyVol !== null && slot - c.createSlot > p.maxAge && c.tag !== 'in') {
         c.buyVol = null;
+        c.netTok = null;
         c.recentSlots = [];
         c.recentSol = [];
         c.recentHead = 0;
