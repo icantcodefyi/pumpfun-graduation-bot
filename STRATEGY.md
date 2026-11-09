@@ -2,7 +2,7 @@
 
 ## What it trades on
 
-A pump.fun bonding curve completes once its real SOL reserve reaches about 85 SOL, and the replay closes any position still open then at the curve's last price. Most coins decay; a few young ones sprint toward completion, 40+ SOL within minutes of launch, on broad buying. On the dev window, the chance of reaching 72 SOL before a 35% drop rose from about 11% at 25 SOL to about 53% at 55 SOL.
+A pump.fun bonding curve completes once its real SOL reserve reaches about 85 SOL, and the replay closes any position still open then at the curve's last price. Most coins decay; a few young ones sprint toward completion on broad buying. On the dev window, the chance of reaching 72 SOL before a 35% drop rose from about 11% at 25 SOL to about 53% at 55 SOL.
 
 The bot enters a coin when, on the batch it decides on:
 
@@ -10,16 +10,17 @@ The bot enters a coin when, on the batch it decides on:
 - **Reserve level:** its recorded real SOL reserve is 45 to 70 SOL.
 - **Velocity:** at least 15 SOL was bought in the last 30 slots.
 - **Breadth:** the five largest buyers hold at most 30% of all buy volume, filtering out pumps by a few wallets that dump together.
-- **Re-entry:** a coin left on a stop or time exit may be entered again while young, since real graduations often shake out first.
+- **Holders:** the ten largest wallets still hold at most 62% of the tokens the curve has sold, since concentrated holders can dump a sprint in one slot.
+- **Re-entry:** a coin left on a stop or time exit may be entered again while young.
 
 ## How it sizes
 
 - **Target:** 10 SOL per position, curve fees included, capped at 40% of equity at entry (4 SOL at the start), so one fresh position rugging 90% after a 50% run cannot breach the guardrail.
 - **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added within 12% of the entry price and 90 slots of entry; failed ones are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
-- **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
+- **Drawdown brake:** new entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
 - **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could lose 75% with equity still within 45% of its peak. No graduation round trip lost more than 47% in testing.
-- **Probes:** up to 50 probes of 0.0125 SOL, held 30 slots each, one at a time, on coins 120+ slots old, keep 20+ coins carrying a round trip of at least 0.01 SOL. Each costs about 0.001 SOL.
+- **Probes:** up to 50 probes of 0.0125 SOL, held 30 slots each, one at a time, on coins 120+ slots old, keep 20+ coins carrying a round trip of at least 0.01 SOL.
 - **Drained curves:** a sell refused because the curve holds too little SOL is halved and retried; an unsellable probe stops blocking new probes.
 
 ## When it exits
@@ -32,5 +33,5 @@ The bot enters a coin when, on the batch it decides on:
 ## Notes
 
 - **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
-- **Dev window:** +29.17 SOL net, 33% maximum drawdown, 65 counted coins, +25.90 SOL at 2× fees, +11.21 SOL without its three best coins.
-- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 3.6 SOL (median). With its 8–20 best dev coins deleted it ends at −2.9 to −4.0 SOL, drawdown at most 42%. The edge needs real graduation sprints in the window.
+- **Dev window:** +30.27 SOL net, 32% maximum drawdown, 64 counted coins, +27.04 SOL at 2× fees, +12.19 SOL without its three best coins.
+- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 1.3 SOL (median; 3.6 before the holder filter). With its 8–20 best dev coins deleted it ends at −2.4 to −3.5 SOL, drawdown at most 43%. The edge needs real graduation sprints in the window.
