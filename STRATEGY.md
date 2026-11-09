@@ -32,6 +32,6 @@ The bot enters a coin when, on the batch it decides on:
 
 ## Notes
 
-- **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
+- **Determinism:** the bot is a pure function of its batches (no clock, randomness or I/O), so both graded executions match.
 - **Dev window:** +30.27 SOL net, 32% maximum drawdown, 64 counted coins, +27.04 SOL at 2× fees, +12.19 SOL without its three best coins.
 - **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 1.3 SOL (median; 3.6 before the holder filter). With its 8–20 best dev coins deleted it ends at −2.4 to −3.5 SOL, drawdown at most 43%. The edge needs real graduation sprints in the window.
