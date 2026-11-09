@@ -14,8 +14,8 @@ The bot enters a coin when, on the batch it decides on:
 
 ## How it sizes
 
-- **Target:** 7 SOL per position, curve fees included.
-- **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added within 12% of the entry price and 90 slots of entry, the room a position this size needs to fill during a sprint; failed ones are resent.
+- **Target:** 10 SOL per position, curve fees included, capped at 40% of equity at entry (4 SOL at the start), so one fresh position rugging 90% after a 50% run cannot breach the guardrail.
+- **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added within 12% of the entry price and 90 slots of entry; failed ones are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
 - **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
 - **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could lose 75% with equity still within 45% of its peak. No graduation round trip lost more than 47% in testing.
@@ -32,5 +32,5 @@ The bot enters a coin when, on the batch it decides on:
 ## Notes
 
 - **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
-- **Dev window:** +28.71 SOL net, 28% maximum drawdown, 65 counted coins, +25.61 SOL at 2× fees, +13.56 SOL without its three best coins.
-- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about STRESS_MEDIAN SOL (median). With its 8 to 20 best dev coins deleted it ends near −4.2 SOL with drawdown under 43%: the drawdown brake sets the floor. The edge needs real graduation sprints in the window.
+- **Dev window:** +29.17 SOL net, 33% maximum drawdown, 65 counted coins, +25.90 SOL at 2× fees, +11.21 SOL without its three best coins.
+- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 3.6 SOL (median). With its 8–20 best dev coins deleted it ends at −2.9 to −4.0 SOL, drawdown at most 42%. The edge needs real graduation sprints in the window.
