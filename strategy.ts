@@ -6,12 +6,16 @@
 // fill near 45 SOL pays ~1.7-2x by the time the curve is near completion. So the bot:
 //   1. enters young coins (30..900 slots old) whose real SOL reserve is 45..70 SOL, with at least
 //      15 SOL bought in the last 30 slots and no five buyers holding more than 30% of buy volume;
-//   2. buys up to 4 SOL in tranches inside the 1%-of-reserve cap, only near its entry price, and
-//      sends a failed or rejected tranche again; at most 3 such positions at once, and new entries
-//      shrink linearly from full size at 15% below the equity peak to nothing at 42%;
-//   3. sells half once the curve holds 72 SOL, the rest at 76 SOL (or lets completion close it),
-//      stops out 25% below its entry price, and gives up after 1500 slots; a coin left on a stop
-//      or a time exit may be entered again if it sets up again while still young;
+//   2. buys up to 10 SOL, and at most 40% of equity, in tranches inside the 1%-of-reserve cap,
+//      while the price is within 12% of its entry price and for 90 slots, and sends a failed or
+//      rejected tranche again; at most 3 such positions at once, never more than could lose 75% of
+//      themselves and leave equity within 45% of its peak, and new entries shrink linearly from full
+//      size at 15% below the equity peak to nothing at 42%;
+//   3. sells 70% once the curve holds 72 SOL and the rest at 80 SOL (or lets completion close it):
+//      near completion the curve's real token reserve falls below a big position's, the replay
+//      scales its impact down, and holding on adds little; stops out 20% below its entry price and
+//      gives up after 1500 slots; a coin left on a stop or a time exit may be entered again if it
+//      sets up again while still young;
 //   4. meanwhile runs tiny probe round trips on calm older coins until enough distinct coins have
 //      round trips for the competition's guardrail.
 //
@@ -37,6 +41,8 @@ export interface Params {
   /** Target position (lamports, curve fees included) and the smallest tranche worth sending. */
   size: bigint;
   minBuy: bigint;
+  /** A new position's target is at most this share of equity at entry. */
+  eqFrac: number;
   /**
    * Drawdown brake on new entries: full size while equity is within ddFull of its peak, scaled
    * linearly to zero at ddZero (and skipped below minEntry); at most maxOpenGrad positions at once.
@@ -55,7 +61,7 @@ export interface Params {
   /** Tranches are added while the price is within addBand above entry, for addWindow slots. */
   addBand: number;
   addWindow: number;
-  /** Exits: half (tp1Frac, in bps of the position) at tp1Rq, the rest at tpRq; stop and time. */
+  /** Exits: tp1FracBps (bps of the position) at tp1Rq, the rest at tpRq; stop and time. */
   tp1Rq: bigint;
   tp1FracBps: bigint;
   tpRq: bigint;
@@ -84,20 +90,21 @@ export const DEFAULT_PARAMS: Params = {
   velWindow: 30,
   velMin: 15n * SOL,
   top5Max: 0.3,
-  size: 4_000_000_000n,
+  size: 10_000_000_000n,
   minBuy: 20_000_000n,
+  eqFrac: 0.4,
   ddFull: 0.15,
   ddZero: 0.42,
   minEntry: 50_000_000n,
   maxOpenGrad: 3,
   ddCap: 0.45,
-  worstLoss: 1.0,
-  addBand: 0.08,
-  addWindow: 60,
+  worstLoss: 0.75,
+  addBand: 0.12,
+  addWindow: 90,
   tp1Rq: 72n * SOL,
-  tp1FracBps: 5_000n,
-  tpRq: 76n * SOL,
-  stopLoss: 0.25,
+  tp1FracBps: 7_000n,
+  tpRq: 80n * SOL,
+  stopLoss: 0.2,
   maxHold: 1500,
   buySlippageBps: 2000,
   sellSlippageBps: 9000,
@@ -427,6 +434,10 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
     if (f > 1) f = 1;
     if (f < 0) f = 0;
     let size = BigInt(Math.trunc(Number(p.size) * f));
+    // Each new position is also capped at eqFrac of equity: a rug of one fresh position cannot take
+    // equity through the drawdown guardrail, and sizes grow only as profits compound.
+    const capEq = BigInt(Math.trunc(Number(eq) * p.eqFrac));
+    if (size > capEq) size = capEq;
     if (size < p.minEntry) size = 0n;
     let gradOpen = 0;
     for (const mint of state.positions.keys()) if (!isProbe(coins.get(mint)?.tag)) gradOpen++;

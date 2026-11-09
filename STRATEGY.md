@@ -2,7 +2,7 @@
 
 ## What it trades on
 
-A pump.fun bonding curve completes once its real SOL reserve reaches about 85 SOL. The replay closes any position still open then at the curve's last price, the highest the curve ever quotes. Most coins decay. A few young coins sprint toward completion: 40+ SOL within minutes of launch, on broad buying. On the dev window, the chance of reaching 72 SOL before a 35% drop rose from about 11% at 25 SOL to about 53% at 55 SOL. A fill near 45 SOL is worth about 1.7–2× near completion.
+A pump.fun bonding curve completes once its real SOL reserve reaches about 85 SOL, and the replay closes any position still open then at the curve's last price. Most coins decay; a few young ones sprint toward completion, 40+ SOL within minutes of launch, on broad buying. On the dev window, the chance of reaching 72 SOL before a 35% drop rose from about 11% at 25 SOL to about 53% at 55 SOL.
 
 The bot enters a coin when, on the batch it decides on:
 
@@ -14,23 +14,23 @@ The bot enters a coin when, on the batch it decides on:
 
 ## How it sizes
 
-- **Target:** 4 SOL per position, curve fees included.
-- **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added only within 8% of the entry price and 60 slots of entry; failed ones are resent.
+- **Target:** 7 SOL per position, curve fees included.
+- **Tranches:** each fits the 1%-of-real-reserve cap per reply, on the reserves the harness checks. Tranches are added within 12% of the entry price and 90 slots of entry, the room a position this size needs to fill during a sprint; failed ones are resent.
 - **Open positions:** at most 3 graduation positions at once, inside the replay's limit of 5.
 - **Drawdown brake:** equity is marked as the harness marks it. New entries shrink linearly from full size at 15% below the equity peak to nothing at 42%.
-- **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could be lost entirely with equity still within 45% of its peak, so simultaneous rugs cannot breach the 50% guardrail.
-- **Probes:** to ensure 20+ coins carry a round trip of at least 0.01 SOL, up to 50 probes of 0.0125 SOL run on coins 120+ slots old with 1+ SOL of real reserve. Each is held 30 slots, one at a time, 150+ slots apart, while at most 2 graduation positions are open. Each costs about 0.001 SOL. On a universe a tenth the dev size, the bot still held 30+ counted coins.
+- **Exposure guard:** a buy is cut so that all open graduation positions and buys in flight could lose 75% with equity still within 45% of its peak. No graduation round trip lost more than 47% in testing.
+- **Probes:** up to 50 probes of 0.0125 SOL, held 30 slots each, one at a time, on coins 120+ slots old, keep 20+ coins carrying a round trip of at least 0.01 SOL. Each costs about 0.001 SOL.
 - **Drained curves:** a sell refused because the curve holds too little SOL is halved and retried; an unsellable probe stops blocking new probes.
 
 ## When it exits
 
-- **Take-profit:** half is sold when the recorded real SOL reserve reaches 72 SOL, and the rest at 76 SOL. If the curve completes first, the replay closes the position at the completion price.
-- **Stop:** everything is sold if the recorded price falls 25% below the entry price.
+- **Take-profit:** 70% is sold when the recorded real SOL reserve reaches 72 SOL, the rest at 80 SOL; a curve that completes first is closed at its completion price. Near completion the replay scales a large position's impact down, so holding adds little, while curves that stall at 75–84 SOL fall hard.
+- **Stop:** everything is sold if the recorded price falls 20% below the entry price.
 - **Time limit:** everything is sold 1,500 slots (about 10 minutes) after entry.
 - **Slippage:** exits use wide slippage limits.
 
 ## Notes
 
 - **Determinism:** the bot is a pure function of its batches, with no clock, randomness or I/O, so both graded executions emit identical orders.
-- **Dev window:** +17.50 SOL net, 23% maximum drawdown, 65 counted coins, +15.50 SOL at 2× fees, +7.65 SOL without its three best coins.
-- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about 3.3 SOL (median). The drawdown brake floors a bad day near −4.2 SOL. The edge needs real graduation sprints in the window.
+- **Dev window:** +28.71 SOL net, 28% maximum drawdown, 65 counted coins, +25.61 SOL at 2× fees, +13.56 SOL without its three best coins.
+- **Risk:** on the kit's block-surrogate copies, which break up coin-level momentum, the bot loses about STRESS_MEDIAN SOL (median). With its 8 to 20 best dev coins deleted it ends near −4.2 SOL with drawdown under 43%: the drawdown brake sets the floor. The edge needs real graduation sprints in the window.
